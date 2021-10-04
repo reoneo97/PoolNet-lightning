@@ -13,9 +13,14 @@ import cv2
 import math
 import time
 
+from loguru import logger
 
-class Solver(object):
+import pytorch_lightning as pl
+
+
+class Solver(pl.LightningModule):
     def __init__(self, train_loader, test_loader, config):
+        super().__init__()
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.config = config
@@ -56,9 +61,19 @@ class Solver(object):
         self.lr = self.config.lr
         self.wd = self.config.wd
 
-        self.optimizer = Adam(filter(lambda p: p.requires_grad, self.net.parameters()), lr=self.lr, weight_decay=self.wd)
+        # Optimizer transferred to configure_optimizers function
+        # self.optimizer = Adam(filter(lambda p: p.requires_grad, self.net.parameters()), lr=self.lr, weight_decay=self.wd)
         self.print_network(self.net, 'PoolNet Structure')
-
+    
+    def configure_optimizers(self):
+        # PyTorch lightning function for Adam Optimizer
+        if self.current_epoch in self.lr_decay_epoch:
+            self.lr = self.lr *0.1
+        optimizer = Adam(self.net.parameters(),
+                    lr=self.lr,
+                    weight_decay=self.wd)
+        return optimizer
+    
     def test(self):
         mode_name = 'sal_fuse'
         time_s = time.time()
@@ -76,56 +91,97 @@ class Solver(object):
         time_e = time.time()
         print('Speed: %f FPS' % (img_num/(time_e-time_s)))
         print('Test Done!')
+    
+    def training_step(self, data_batch, data_batch_idx):
+        sal_image, sal_label = data_batch['sal_image'], data_batch['sal_label']
+        if (sal_image.size(2) != sal_label.size(2)) or (sal_image.size(3) != sal_label.size(3)):
+            print('IMAGE ERROR, PASSING```')
+            return
+        sal_image, sal_label= Variable(sal_image), Variable(sal_label)
+        sal_pred = self.net(sal_image)
+        sal_loss_fuse = F.binary_cross_entropy_with_logits(sal_pred, sal_label, reduction='sum')
+        sal_loss = sal_loss_fuse / (self.iter_size * self.config.batch_size)
+
+        return sal_loss
+
+    def on_train_epoch_end(self,outputs):
+        #Function to get loss for the entire epoch
+        #logger.info(outputs)
+        losses = torch.stack([x["loss"] for x in outputs])
+        r_sal_loss = losses.sum()
+        print('\n Epoch: [%2d/%2d]  ||  Sal : %10.4f' % (
+                self.current_epoch, self.config.epoch, r_sal_loss))
+        return r_sal_loss
+
+    def training_epoch_end(self, outputs) -> None:
+        if (self.current_epoch + 1) % self.config.epoch_save ==0:
+
+            ckpt_path = f"{self.logger.save_dir}/{self.logger.name}" \
+                f"/version_{self.logger.version}/models/" \
+                f"epoch_{self.current_epoch}.pth"
+            print("="*80,"\nSaving Checkpoint\n","="*80)
+
+            self.trainer.save_checkpoint(ckpt_path)
+    
+    def on_train_end(self) -> None:
+        ckpt_path = f"{self.logger.save_dir}/{self.logger.name}" \
+                f"/version_{self.logger.version}/models/" \
+                f"final.pth"
+        self.trainer.save_checkpoint(ckpt_path)
+
+
+        
 
     # training phase
-    def train(self):
-        iter_num = len(self.train_loader.dataset) // self.config.batch_size
-        aveGrad = 0
-        for epoch in range(self.config.epoch):
-            r_sal_loss= 0
-            self.net.zero_grad()
-            for i, data_batch in enumerate(self.train_loader):
-                sal_image, sal_label = data_batch['sal_image'], data_batch['sal_label']
-                if (sal_image.size(2) != sal_label.size(2)) or (sal_image.size(3) != sal_label.size(3)):
-                    print('IMAGE ERROR, PASSING```')
-                    continue
-                sal_image, sal_label= Variable(sal_image), Variable(sal_label)
-                if self.config.cuda:
-                    # cudnn.benchmark = True
-                    sal_image, sal_label = sal_image.cuda(), sal_label.cuda()
+    # def train(self):
+    #     iter_num = len(self.train_loader.dataset) // self.config.batch_size
+    #     aveGrad = 0
+    #     for epoch in range(self.config.epoch):
+    #         r_sal_loss= 0
+    #         self.net.zero_grad()
+    #         for i, data_batch in enumerate(self.train_loader):
+    #             sal_image, sal_label = data_batch['sal_image'], data_batch['sal_label']
+    #             if (sal_image.size(2) != sal_label.size(2)) or (sal_image.size(3) != sal_label.size(3)):
+    #                 print('IMAGE ERROR, PASSING```')
+    #                 continue
+    #             sal_image, sal_label= Variable(sal_image), Variable(sal_label)
+    #             if self.config.cuda:
+    #                 # cudnn.benchmark = True
+    #                 sal_image, sal_label = sal_image.cuda(), sal_label.cuda()
 
-                sal_pred = self.net(sal_image)
-                sal_loss_fuse = F.binary_cross_entropy_with_logits(sal_pred, sal_label, reduction='sum')
-                sal_loss = sal_loss_fuse / (self.iter_size * self.config.batch_size)
-                r_sal_loss += sal_loss.data
+    #             sal_pred = self.net(sal_image)
+    #             sal_loss_fuse = F.binary_cross_entropy_with_logits(sal_pred, sal_label, reduction='sum')
+    #             sal_loss = sal_loss_fuse / (self.iter_size * self.config.batch_size)
+    #             r_sal_loss += sal_loss.data
 
-                sal_loss.backward()
+    #             sal_loss.backward()
 
-                aveGrad += 1
+    #             aveGrad += 1
 
-                # accumulate gradients as done in DSS
-                if aveGrad % self.iter_size == 0:
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-                    aveGrad = 0
+    #             # accumulate gradients as done in DSS
+    #             if aveGrad % self.iter_size == 0:
+    #                 self.optimizer.step()
+    #                 self.optimizer.zero_grad()
+    #                 aveGrad = 0
 
-                if i % (self.show_every // self.config.batch_size) == 0:
-                    if i == 0:
-                        x_showEvery = 1
-                    print('epoch: [%2d/%2d], iter: [%5d/%5d]  ||  Sal : %10.4f' % (
-                        epoch, self.config.epoch, i, iter_num, r_sal_loss/x_showEvery))
-                    print('Learning rate: ' + str(self.lr))
-                    r_sal_loss= 0
+    #             if i % (self.show_every // self.config.batch_size) == 0:
+    #                 if i == 0:
+    #                     x_showEvery = 1
+    #                 print('epoch: [%2d/%2d], iter: [%5d/%5d]  ||  Sal : %10.4f' % (
+    #                     epoch, self.config.epoch, i, iter_num, r_sal_loss/x_showEvery))
+    #                 print('Learning rate: ' + str(self.lr))
+    #                 r_sal_loss= 0
 
-            if (epoch + 1) % self.config.epoch_save == 0:
-                torch.save(self.net.state_dict(), '%s/models/epoch_%d.pth' % (self.config.save_folder, epoch + 1))
+    #         if (epoch + 1) % self.config.epoch_save == 0:
+    #             torch.save(self.net.state_dict(), '%s/models/epoch_%d.pth' % (self.config.save_folder, epoch + 1))
 
-            if epoch in self.lr_decay_epoch:
-                self.lr = self.lr * 0.1
-                self.optimizer = Adam(filter(lambda p: p.requires_grad, self.net.parameters()), lr=self.lr, weight_decay=self.wd)
+    #         if epoch in self.lr_decay_epoch:
+    #             self.lr = self.lr * 0.1
+    #             self.optimizer = Adam(filter(lambda p: p.requires_grad, self.net.parameters()), lr=self.lr, weight_decay=self.wd)
 
-        torch.save(self.net.state_dict(), '%s/models/final.pth' % self.config.save_folder)
+    #     torch.save(self.net.state_dict(), '%s/models/final.pth' % self.config.save_folder)
 
+# Function seems to be unused, PyTorch F.binary_cross_entropy_with_logits used instead
 def bce2d(input, target, reduction=None):
     assert(input.size() == target.size())
     pos = torch.eq(target, 1).float()

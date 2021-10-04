@@ -2,6 +2,8 @@ import argparse
 import os
 from dataset.dataset import get_loader
 from solver import Solver
+from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
+from pytorch_lightning import Trainer
 
 def get_test_info(sal_mode='e'):
     if sal_mode == 'e':
@@ -34,11 +36,22 @@ def main(config):
         run = 0
         while os.path.exists("%s/run-%d" % (config.save_folder, run)):
             run += 1
-        os.mkdir("%s/run-%d" % (config.save_folder, run))
-        os.mkdir("%s/run-%d/models" % (config.save_folder, run))
-        config.save_folder = "%s/run-%d" % (config.save_folder, run)
+
+        #Pytorch Lightning creates the directories automatically 
+        # os.mkdir("%s/run-%d" % (config.save_folder, run))
+        # os.mkdir("%s/run-%d/models" % (config.save_folder, run))
+        # config.save_folder = "%s/run-%d" % (config.save_folder, run)
         train = Solver(train_loader, None, config)
-        train.train()
+        
+        if config.cuda: #PTL uses number of gpus to decide if cuda is used
+            gpus = 1
+        else:
+            gpus = 0
+        logger = TensorBoardLogger(save_dir=config.save_folder,name=config.name)
+        trainer = Trainer(gpus=gpus, max_epochs=config.epoch,logger = logger)
+        # Original code has no validation loaders
+        trainer.fit(train, train_loader)
+
     elif config.mode == 'test':
         config.test_root, config.test_list = get_test_info(config.sal_mode)
         test_loader = get_loader(config, mode='test')
@@ -84,6 +97,11 @@ if __name__ == '__main__':
 
     # Misc
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
+
+
+    ## Added argument for experiment name
+    parser.add_argument('--name',type=str, default="experiment")
+
     config = parser.parse_args()
 
     if not os.path.exists(config.save_folder):
@@ -93,5 +111,6 @@ if __name__ == '__main__':
     test_root, test_list = get_test_info(config.sal_mode)
     config.test_root = test_root
     config.test_list = test_list
-
     main(config)
+
+# python main.py --train_root data/msrab_hkuis/ --train_list data/msrab_hkuis/msrab_hkuis_train_no_small.lst
