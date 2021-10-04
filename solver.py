@@ -105,15 +105,12 @@ class Solver(pl.LightningModule):
         return sal_loss
 
     def on_train_epoch_end(self,outputs):
-        #Function to get loss for the entire epoch
+        #Function to get loss for the entire epoch and save model 
         #logger.info(outputs)
         losses = torch.stack([x["loss"] for x in outputs])
         r_sal_loss = losses.sum()
         print('\n Epoch: [%2d/%2d]  ||  Sal : %10.4f' % (
                 self.current_epoch, self.config.epoch, r_sal_loss))
-        return r_sal_loss
-
-    def training_epoch_end(self, outputs) -> None:
         if (self.current_epoch + 1) % self.config.epoch_save ==0:
 
             ckpt_path = f"{self.logger.save_dir}/{self.logger.name}" \
@@ -122,8 +119,10 @@ class Solver(pl.LightningModule):
             print("="*80,"\nSaving Checkpoint\n","="*80)
 
             self.trainer.save_checkpoint(ckpt_path)
+        
     
     def on_train_end(self) -> None:
+        # Save final model
         ckpt_path = f"{self.logger.save_dir}/{self.logger.name}" \
                 f"/version_{self.logger.version}/models/" \
                 f"final.pth"
